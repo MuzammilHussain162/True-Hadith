@@ -4,10 +4,14 @@ This file shows the expected Flask endpoints that should be implemented
 to work with the Flutter app's authentication flow.
 
 Install required packages:
-pip install flask flask-cors psycopg2-binary python-dotenv
+pip install flask flask-cors psycopg2-binary python-dotenv faiss-cpu openai pandas numpy
 
 Database Setup:
 Make sure PostgreSQL is running and create the database with the schema provided.
+
+FAISS Setup:
+Place FAISS index files in: data/faiss/
+Place mapping CSV files in: data/mapping/
 """
 
 from flask import Flask, request, jsonify
@@ -17,6 +21,11 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+import faiss
+import pandas as pd
+import numpy as np
+import openai
+import re
 
 load_dotenv()
 
@@ -31,6 +40,70 @@ DB_CONFIG = {
     'password': os.getenv('DB_PASSWORD', 'password'),
     'port': os.getenv('DB_PORT', '5432')
 }
+
+# FAISS and Mapping File Paths
+BUKHARI_FAISS_PATH = os.path.join('data', 'faiss', 'bukhari.index')
+TIRMIZI_FAISS_PATH = os.path.join('data', 'faiss', 'tirmizi.index')
+BUKHARI_MAPPING_PATH = os.path.join('data', 'mapping', 'bukhari_mapping.csv')
+TIRMIZI_MAPPING_PATH = os.path.join('data', 'mapping', 'tirmizi_mapping.csv')
+
+# Global variables to store loaded FAISS indexes and mappings
+bukhari_index = None
+tirmizi_index = None
+bukhari_mapping = None
+tirmizi_mapping = None
+
+# OpenAI API Key
+openai.api_key = os.getenv('OPENAI_API_KEY', '')
+
+
+def load_faiss_indexes():
+    """Load FAISS indexes at startup"""
+    global bukhari_index, tirmizi_index
+    
+    try:
+        if os.path.exists(BUKHARI_FAISS_PATH):
+            bukhari_index = faiss.read_index(BUKHARI_FAISS_PATH)
+            print(f"✓ Loaded Bukhari FAISS index: {BUKHARI_FAISS_PATH}")
+        else:
+            print(f"⚠ Warning: Bukhari FAISS index not found at {BUKHARI_FAISS_PATH}")
+            
+        if os.path.exists(TIRMIZI_FAISS_PATH):
+            tirmizi_index = faiss.read_index(TIRMIZI_FAISS_PATH)
+            print(f"✓ Loaded Tirmizi FAISS index: {TIRMIZI_FAISS_PATH}")
+        else:
+            print(f"⚠ Warning: Tirmizi FAISS index not found at {TIRMIZI_FAISS_PATH}")
+    except Exception as e:
+        print(f"✗ Error loading FAISS indexes: {e}")
+
+
+def load_mapping_csvs():
+    """Load mapping CSV files at startup"""
+    global bukhari_mapping, tirmizi_mapping
+    
+    try:
+        if os.path.exists(BUKHARI_MAPPING_PATH):
+            bukhari_mapping = pd.read_csv(BUKHARI_MAPPING_PATH)
+            print(f"✓ Loaded Bukhari mapping CSV: {BUKHARI_MAPPING_PATH}")
+        else:
+            print(f"⚠ Warning: Bukhari mapping CSV not found at {BUKHARI_MAPPING_PATH}")
+            
+        if os.path.exists(TIRMIZI_MAPPING_PATH):
+            tirmizi_mapping = pd.read_csv(TIRMIZI_MAPPING_PATH)
+            print(f"✓ Loaded Tirmizi mapping CSV: {TIRMIZI_MAPPING_PATH}")
+        else:
+            print(f"⚠ Warning: Tirmizi mapping CSV not found at {TIRMIZI_MAPPING_PATH}")
+    except Exception as e:
+        print(f"✗ Error loading mapping CSVs: {e}")
+
+
+# Load FAISS and mappings when server starts
+print("\n" + "="*50)
+print("Loading FAISS indexes and mapping files...")
+print("="*50)
+load_faiss_indexes()
+load_mapping_csvs()
+print("="*50 + "\n")
 
 
 def get_db_connection():
@@ -182,10 +255,188 @@ def login_user():
         return jsonify({'message': f'Login failed: {str(e)}'}), 500
 
 
+def normalize_arabic_text(text):
+    """Normalize Arabic text: remove tashkeel, normalize alif/ya"""
+    # Remove Arabic diacritics (tashkeel)
+    text = re.sub(r'[\u064B-\u065F\u0670]', '', text)
+    
+    # Normalize Alif variations
+    text = re.sub(r'[إأآا]', 'ا', text)
+    
+    # Normalize Alif Maqsura -> Ya
+    text = text.replace("ى", "ي")
+    
+    return text
+
+
+def clean_text(text):
+    """Remove punctuation from all languages"""
+    # Remove all punctuation including Arabic punctuation
+    punctuation = r'[!"#$%&\'()*+,\-./:;<=>?@[\\\]^_`{|}~،؟؛«»؎٭ـ۔]'
+    text = re.sub(punctuation, '', text)
+    return text.strip()
+
+
+def get_embedding(text):
+    """Get OpenAI embedding for text"""
+    try:
+        response = openai.embeddings.create(
+            model="text-embedding-3-large",
+            input=text
+        )
+        return np.array(response.data[0].embedding, dtype=np.float32)
+    except Exception as e:
+        print(f"Error getting embedding: {e}")
+        return None
+
+
+@app.route('/api/search', methods=['POST'])
+def search_hadiths():
+    """
+    Search hadiths using FAISS semantic similarity
+    
+    Expected JSON body:
+    {
+        "user_id": int,
+        "query": "string"
+    }
+    
+    Returns:
+    {
+        "results": [
+            {
+                "hadith_id": int,
+                "book_name": "string",
+                "hadith_number": int,
+                "chapter_number": int,
+                "grade": "string"
+            }
+        ]
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+        
+        user_id = data.get('user_id')
+        query = data.get('query')
+        
+        if not query:
+            return jsonify({'message': 'Missing query'}), 400
+        
+        # Normalize and clean query
+        normalized_query = normalize_arabic_text(query) if any('\u0600' <= c <= '\u06FF' for c in query) else query
+        cleaned_query = clean_text(normalized_query)
+        
+        # Get embedding
+        query_embedding = get_embedding(cleaned_query)
+        if query_embedding is None:
+            return jsonify({'message': 'Failed to generate embedding'}), 500
+        
+        # Reshape for FAISS (needs 2D array)
+        query_vector = query_embedding.reshape(1, -1)
+        
+        # Search in both indexes
+        hadith_ids = set()
+        
+        # Search Bukhari
+        if bukhari_index is not None and bukhari_mapping is not None:
+            k = 10  # Top 10 results
+            distances, indices = bukhari_index.search(query_vector, k)
+            
+            for idx in indices[0]:
+                if idx < len(bukhari_mapping):
+                    hadith_id = bukhari_mapping.iloc[idx]['hadith_id']
+                    hadith_ids.add(('bukhari', hadith_id))
+        
+        # Search Tirmizi
+        if tirmizi_index is not None and tirmizi_mapping is not None:
+            k = 10  # Top 10 results
+            distances, indices = tirmizi_index.search(query_vector, k)
+            
+            for idx in indices[0]:
+                if idx < len(tirmizi_mapping):
+                    hadith_id = tirmizi_mapping.iloc[idx]['hadith_id']
+                    hadith_ids.add(('tirmizi', hadith_id))
+        
+        # Fetch hadiths from database
+        if not hadith_ids:
+            return jsonify({'results': []}), 200
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Build query to fetch hadiths
+        hadith_id_list = [h[1] for h in hadith_ids]
+        placeholders = ','.join(['%s'] * len(hadith_id_list))
+        
+        cursor.execute(f"""
+            SELECT 
+                h.hadith_id,
+                h.hadith_number,
+                h.hadith_arabic,
+                h.hadith_english,
+                h.hadith_urdu,
+                b.book_name_english,
+                c.chapter_number,
+                c.chapter_title_english,
+                g.grade_type,
+                n.narrator_name
+            FROM hadiths h
+            JOIN hadith_books b ON h.FK_book_id = b.book_id
+            JOIN chapters c ON h.FK_chapter_id = c.chapter_id
+            LEFT JOIN hadith_grade g ON h.FK_hadith_grade_id = g.grade_id
+            LEFT JOIN hadith_narrator n ON h.FK_hadith_narrator_id = n.narrator_id
+            WHERE h.hadith_id IN ({placeholders})
+        """, hadith_id_list)
+        
+        hadiths = cursor.fetchall()
+        
+        # Save search to history
+        if user_id:
+            cursor.execute(
+                "INSERT INTO history (FK_user_id, query_text, created_at) VALUES (%s, %s, %s)",
+                (user_id, query, datetime.now())
+            )
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        # Format results
+        results = []
+        for h in hadiths:
+            results.append({
+                'hadith_id': h['hadith_id'],
+                'book_name': h['book_name_english'],
+                'hadith_number': h['hadith_number'],
+                'chapter_number': h['chapter_number'],
+                'grade': h['grade_type'] or 'No grade mention'
+            })
+        
+        return jsonify({'results': results}), 200
+        
+    except Exception as e:
+        print(f"Search error: {e}")
+        return jsonify({'message': f'Search failed: {str(e)}'}), 500
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'ok', 'message': 'API is running'}), 200
+    faiss_status = {
+        'bukhari_loaded': bukhari_index is not None,
+        'tirmizi_loaded': tirmizi_index is not None,
+        'bukhari_mapping_loaded': bukhari_mapping is not None,
+        'tirmizi_mapping_loaded': tirmizi_mapping is not None
+    }
+    return jsonify({
+        'status': 'ok', 
+        'message': 'API is running',
+        'faiss_status': faiss_status
+    }), 200
 
 
 if __name__ == '__main__':
