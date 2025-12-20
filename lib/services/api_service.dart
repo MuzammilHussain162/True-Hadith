@@ -4,7 +4,7 @@ import '../models/user_model.dart';
 
 class ApiService {
   // Update this with your Flask backend URL
-  static const String baseUrl = 'http://localhost:5000/api'; // Change to your backend URL
+  static const String baseUrl = 'http:// 192.168.100.12:5000/api'; // Change to your backend URL
   
   // For Android emulator, use: http://10.0.2.2:5000/api
   // For iOS simulator, use: http://localhost:5000/api

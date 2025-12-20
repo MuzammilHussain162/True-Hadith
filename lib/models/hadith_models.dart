@@ -1,8 +1,8 @@
-import 'package:flutter/material.dart';
 
 /// Lightweight models used on the Flutter side.
 /// Backend (Flask + PostgreSQL) is responsible for actually
 /// running FAISS, CSV mapping and SQL queries.
+library;
 
 class HadithSummary {
   final int hadithId;

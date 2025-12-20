@@ -12,7 +12,7 @@ class VoiceInputPage extends StatefulWidget {
 
 class _VoiceInputPageState extends State<VoiceInputPage> {
   bool _isListening = false;
-  String _recognizedText = '';
+  final String _recognizedText = '';
 
   @override
   Widget build(BuildContext context) {

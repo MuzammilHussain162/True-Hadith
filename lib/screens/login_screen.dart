@@ -413,19 +413,23 @@ class _LoginScreenState extends State<LoginScreen>
 
                                           try {
                                             await AuthService.sendPasswordResetEmail(email);
-                                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
                                               const SnackBar(
                                                 content: Text('Password reset email sent'),
                                                 backgroundColor: AppColors.success,
                                               ),
                                             );
+                                            }
                                           } catch (e) {
-                                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
                                               SnackBar(
                                                 content: Text('Error: ${e.toString().replaceAll('Exception: ', '')}'),
                                                 backgroundColor: Colors.red,
                                               ),
                                             );
+                                            }
                                           }
                                         },
                                       ),

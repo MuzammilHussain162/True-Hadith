@@ -12,7 +12,6 @@ import 'utils/apps_colors.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase with platform-specific options (required for web)
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -125,4 +124,3 @@ class _AuthWrapperState extends State<AuthWrapper> {
     return const LoginScreen();
   }
 }
-
